@@ -162,8 +162,87 @@ You can replace the variables in the script with your own before running.
 See [TRAIN](TRAIN.md) for more details.
 
 ### Eval
-We provide the scripts for evaluating VLM, T2I and Editing benchmarks. 
+We provide the scripts for evaluating VLM, T2I and Editing benchmarks.
 Please See [EVAL](EVAL.md) for more details.
+
+### nuScenes dataset conversion
+
+For quantitative evaluation of BAGEL on nuScenes imagery you can convert the
+original nuScenes dataset into the Bagel parquet format with
+[`scripts/convert_nuscenes_to_bagel.py`](scripts/convert_nuscenes_to_bagel.py).
+The script keeps the split layout (e.g. ``train``/``val``) identical to the
+official nuScenes splits so it can be reused for both training and evaluation.
+
+```bash
+python scripts/convert_nuscenes_to_bagel.py \
+  --nuscenes-root /path/to/nuscenes \
+  --version v1.0-trainval \
+  --splits train val \
+  --output-dir /path/to/output/bagel_nuscenes \
+  --sensors CAM_FRONT CAM_FRONT_LEFT CAM_FRONT_RIGHT
+```
+
+Optional flags ``--dataset-info-path`` and ``--parquet-info-path`` can be used
+to emit helper JSON files that plug directly into the configuration expected by
+Bagel's dataloaders.
+
+### Interleaved nuScenes evaluation metrics
+
+Once you have generated nuScenes-style predictions in the Bagel parquet
+format, you can score them against the ground-truth frames with
+[`scripts/eval/compute_interleaved_metrics.py`](scripts/eval/compute_interleaved_metrics.py).
+The script aligns rows across two parquet directories, computes per-frame PSNR
+and SSIM, and reports both FID (Inception v3 features) and FVD (3D ResNet-18
+features) so you can reuse the outputs for general quantitative evaluation.
+Feature extraction for both metrics is batched—use `--batch-size` for FID and
+`--fvd-batch-size` for FVD—to maintain high device utilisation when evaluating
+long sequences.
+
+### Batched nuScenes inference
+
+To materialise Bagel predictions for nuScenes sequences in bulk, use
+[`scripts/infer/run_nuscenes_batch_inference.py`](scripts/infer/run_nuscenes_batch_inference.py).
+The helper mirrors the Bagel parquet schema, so the outputs can be fed directly
+into the evaluator above.
+
+```bash
+python scripts/infer/run_nuscenes_batch_inference.py \
+  --model-path models/BAGEL-7B-MoT \
+  --input-dir /path/to/bagel_nuscenes/val \
+  --output-dir /path/to/generated_outputs/val \
+  --context-frames 3 \
+  --context-mode ground_truth
+```
+
+The script streams each parquet shard sequentially, groups frames by
+`scene_token`/`sensor` (customisable with `--sequence-columns`), reuses the
+requested number of previous frames as context, and emits PNG-encoded
+predictions in new shards.  Autoregressive rollouts are available via
+`--context-mode predicted`.
+
+```bash
+python scripts/eval/compute_interleaved_metrics.py \
+  --reference-dir /path/to/bagel_nuscenes/val \
+  --generated-dir /path/to/generated_outputs/val \
+  --sequence-columns scene_token sensor \
+  --order-columns timestamp \
+  --save-report nuscenes_val_metrics.json
+```
+
+Alternatively you can export the relevant paths as environment variables and
+invoke [`scripts/eval/run_nuscenes_interleaved_eval.sh`](scripts/eval/run_nuscenes_interleaved_eval.sh):
+
+```bash
+REFERENCE_DIR=/path/to/bagel_nuscenes/val \
+GENERATED_DIR=/path/to/generated_outputs/val \
+SAVE_REPORT=nuscenes_val_metrics.json \
+FVD_BATCH_SIZE=8 \
+scripts/eval/run_nuscenes_interleaved_eval.sh
+```
+
+Custom join keys (``--join-on``), sequence definitions and device selection are
+supported so the same script can be reused for other Bagel interleaved video
+datasets.
 
 
 ## 📊 Benchmarks
